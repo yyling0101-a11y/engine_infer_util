@@ -467,7 +467,7 @@ class TRTDetector:
         _results = []
         for i in range(b):
             img_ref = _imgs_gpu[i] if self.keep_image_for_plot else None
-            _results.append(self._postprocess_one(pred[i], _metas[i], img_ref), _classes)
+            _results.append(self._postprocess_one(pred[i], _metas[i], img_ref, _classes))
         return _results
 
     @torch.no_grad()
