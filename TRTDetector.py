@@ -36,11 +36,11 @@ class SimpleBoxes:
 
 class SimpleResult:
     def __init__(
-        self,
-        boxes: SimpleBoxes,
-        names: Optional[dict] = None,
-        img_gpu: Optional[torch.Tensor] = None,  # HWC BGR CUDA
-        path: str = "",
+            self,
+            boxes: SimpleBoxes,
+            names: Optional[dict] = None,
+            img_gpu: Optional[torch.Tensor] = None,  # HWC BGR CUDA
+            path: str = "",
     ):
         self.boxes = boxes
         self.names = names or {}
@@ -107,15 +107,15 @@ class SimpleResult:
 
 class TRTDetector:
     def __init__(
-        self,
-        engine_path: str,
-        device: str = "cuda:0",
-        imgsz: int = 640,
-        conf_thres: float = 0.25,
-        iou_thres: float = 0.45,
-        max_det: int = 300,
-        class_agnostic: bool = False,
-        keep_image_for_plot: bool = False,
+            self,
+            engine_path: str,
+            device: str = "cuda:0",
+            imgsz: int = 640,
+            conf_thres: float = 0.25,
+            iou_thres: float = 0.45,
+            max_det: int = 300,
+            class_agnostic: bool = False,
+            keep_image_for_plot: bool = False,
     ):
         self.device = torch.device(device)
         self.imgsz = int(imgsz)
@@ -304,7 +304,7 @@ class TRTDetector:
             dtype=torch.uint8,
             device=img_gpu.device,
         )
-        canvas[:, :, dh : dh + new_h, dw : dw + new_w] = x
+        canvas[:, :, dh: dh + new_h, dw: dw + new_w] = x
         canvas = canvas[:, [2, 1, 0], :, :].contiguous()  # BGR -> RGB
         canvas = canvas.to(torch.float32) / 255.0
 
@@ -312,7 +312,7 @@ class TRTDetector:
         return canvas, meta
 
     def _prepare_batch(
-        self, imgs_gpu: List[torch.Tensor]
+            self, imgs_gpu: List[torch.Tensor]
     ) -> Tuple[torch.Tensor, List[dict]]:
         batch_size = len(imgs_gpu)
         if batch_size != self.engine_batch:
@@ -386,17 +386,24 @@ class TRTDetector:
         return boxes
 
     def _postprocess_one(
-        self,
-        pred_one: torch.Tensor,  # [C, N] or [84, 8400]
-        meta: dict,
-        img_gpu: Optional[torch.Tensor],
+            self,
+            _pred_one: torch.Tensor,  # [C, N] or [84, 8400]
+            _meta: dict,
+            _img_gpu: Optional[torch.Tensor],
+            _classes=None,
     ) -> SimpleResult:
-        pred = pred_one.transpose(0, 1).contiguous()  # [N, C]
+        pred = _pred_one.transpose(0, 1).contiguous()  # [N, C]
         boxes_xywh = pred[:, :4]
         cls_scores = pred[:, 4:]
 
         conf, cls = cls_scores.max(dim=1)
+
         keep = conf > self.conf_thres
+
+        # 类别过滤
+        if _classes is not None:
+            classes_tensor = torch.as_tensor(_classes, device=cls.device)
+            keep = keep & (cls.unsqueeze(1) == classes_tensor).any(dim=1)
 
         if keep.sum() == 0:
             return SimpleResult(
@@ -406,7 +413,7 @@ class TRTDetector:
                     cls=torch.empty((0,), dtype=torch.float32),
                 ),
                 names=self.names,
-                img_gpu=img_gpu if self.keep_image_for_plot else None,
+                img_gpu=_img_gpu if self.keep_image_for_plot else None,
             )
 
         boxes_xywh = boxes_xywh[keep]
@@ -428,7 +435,7 @@ class TRTDetector:
         conf = conf[keep_idx]
         cls = cls[keep_idx]
 
-        boxes_xyxy = self._scale_boxes_to_original(boxes_xyxy, meta)
+        boxes_xyxy = self._scale_boxes_to_original(boxes_xyxy, _meta)
 
         # 仅 boxes/conf/cls 搬到 CPU
         return SimpleResult(
@@ -438,33 +445,36 @@ class TRTDetector:
                 cls=cls.float().detach().cpu(),
             ),
             names=self.names,
-            img_gpu=img_gpu if self.keep_image_for_plot else None,
+            img_gpu=_img_gpu if self.keep_image_for_plot else None,
         )
 
     def _postprocess_batch(
-        self,
-        outputs: dict,
-        metas: List[dict],
-        imgs_gpu: List[torch.Tensor],
+            self,
+            _outputs: dict,
+            _metas: List[dict],
+            _imgs_gpu: List[torch.Tensor],
+            _classes=None
     ) -> List[SimpleResult]:
         # 常见 Ultralytics detect 输出: [B, 84, 8400]
-        pred = outputs[self.output_names[0]]
+        pred = _outputs[self.output_names[0]]
         if pred.ndim != 3:
             raise RuntimeError(f"Unexpected output shape: {tuple(pred.shape)}")
 
         b = pred.shape[0]
-        if b != len(metas):
-            raise RuntimeError(f"Output batch={b}, but metas={len(metas)}")
+        if b != len(_metas):
+            raise RuntimeError(f"Output batch={b}, but metas={len(_metas)}")
 
-        results = []
+        _results = []
         for i in range(b):
-            img_ref = imgs_gpu[i] if self.keep_image_for_plot else None
-            results.append(self._postprocess_one(pred[i], metas[i], img_ref))
-        return results
+            img_ref = _imgs_gpu[i] if self.keep_image_for_plot else None
+            _results.append(self._postprocess_one(pred[i], _metas[i], img_ref), _classes)
+        return _results
 
     @torch.no_grad()
+    @torch.no_grad()
     def infer(
-        self, imgs: Union[torch.Tensor, List[torch.Tensor], Tuple[torch.Tensor, ...]]
+            self, imgs: Union[torch.Tensor, List[torch.Tensor], Tuple[torch.Tensor, ...]],
+            classes=None,
     ):
         """
         支持：
@@ -479,46 +489,55 @@ class TRTDetector:
         single = isinstance(imgs, torch.Tensor)
         imgs_list = [imgs] if single else list(imgs)
 
-        x, metas = self._prepare_batch(imgs_list)
-        outputs = self._infer_raw(x)
-        results = self._postprocess_batch(outputs, metas, imgs_list)
+        x, _metas = self._prepare_batch(imgs_list)
+        _outputs = self._infer_raw(x)
+
+        _results = self._postprocess_batch(_outputs, _metas, imgs_list, classes)
 
         if single:
-            return results[0]
-        return results
+            return _results[0]
+        return _results
 
 
 if __name__ == "__main__":
     det = TRTDetector(
-        "/home/nvidia/engine_infer_util/model/yolo11s_1.engine",
+        "/home/nvidia/engine_infer_util/model/yolo11s_batch2.engine",
         device="cuda:0",
         imgsz=640,
         conf_thres=0.25,
         iou_thres=0.45,
         max_det=300,
-        keep_image_for_plot=False,
+        keep_image_for_plot=True,
     )
 
     det.warmup(3)
 
     img0 = cv2.imread("bus.jpg")
     img0_gpu = torch.from_numpy(img0).to("cuda:0", non_blocking=True)
-
+    print(det.engine_batch)
     while True:
         try:
             start = time.time()
             if det.engine_batch == 1:
                 result = det.infer(img0_gpu)
-                # print("num boxes =", len(result.boxes.conf))
-                # vis = result.plot()
+                print("num boxes =", len(result.boxes.conf))
+                vis = result.plot()
+                cv2.imshow("result", vis)
+                key = cv2.waitKey(0)
+                if key == ord("q"):
+                    exit()
             else:
                 imgs_gpu = [img0_gpu for _ in range(det.engine_batch)]
                 results = det.infer(imgs_gpu)
-                # for i, result in enumerate(results):
-                    # print(f"[{i}] num boxes =", len(result.boxes.conf))
-                    # vis = result.plot()
+                for i, result in enumerate(results):
+                    print(f"[{i}] num boxes =", len(result.boxes.conf))
+                    vis = result.plot()
+                    cv2.imshow("result", vis)
+                    key = cv2.waitKey(0)
+                    if key == ord("q"):
+                        exit()
             end = time.time()
             print(f"infer time = {(end - start) * 1000:.4f} ms")
-            
+
         except KeyboardInterrupt:
             break
